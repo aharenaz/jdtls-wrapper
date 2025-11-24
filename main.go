@@ -70,7 +70,7 @@ func main() {
 }
 
 func run() error {
-	cmd := exec.Command("jdtls", "--jvm-arg=-javaagent:/Users/quantong/.lombok/lombok.jar")
+	cmd := exec.Command("jdtls", os.Args[1:]...)
 
 	serverStdin, err := cmd.StdinPipe()
 	if err != nil {
