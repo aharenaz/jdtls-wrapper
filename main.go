@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -70,7 +71,14 @@ func main() {
 }
 
 func run() error {
-	cmd := exec.Command("jdtls", os.Args[1:]...)
+	debugEnabled := flag.Bool("debug", false, "Enable debugging messages")
+	executable := flag.String("executable", "java", "Main jdtls executable")
+
+	flag.Parse()
+
+	args := flag.Args()
+
+	cmd := exec.Command(*executable, args...)
 
 	serverStdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -98,17 +106,21 @@ func run() error {
 		for {
 			body, err := readLSPMessage(reader)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+				fmt.Fprintln(os.Stderr, "[jdtls-wrapper >] Error: ", err.Error())
 			}
 
 			var stdReq *stdRequest
 			if err := json.Unmarshal(body, &stdReq); err != nil {
-				fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+				fmt.Fprintln(os.Stderr, "[jdtls-wrapper >] Error: ", err.Error())
 			}
 
 			if jdtURI, ok := m[stdReq.Params.TextDocument.URI]; ok {
 				stdReq.Params.TextDocument.URI = jdtURI
 				body, _ = json.Marshal(stdReq)
+			}
+
+			if *debugEnabled {
+				fmt.Fprintf(os.Stderr, "[jdtls-wrapper >] Debug: %s", body)
 			}
 
 			fmt.Fprintf(serverStdin, "Content-Length: %d\r\n\r\n", len(body))
@@ -123,14 +135,16 @@ func run() error {
 		for {
 			body, err := readLSPMessage(reader)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+				fmt.Fprintln(os.Stderr, "[jdtls-wrapper <] Error: ", err.Error())
 			}
 
-			fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", string(body))
+			if *debugEnabled {
+				fmt.Fprintln(os.Stderr, "[jdtls-wrapper <]", string(body))
+			}
 
 			var jdtResp *jdtResponse
 			if err := json.Unmarshal(body, &jdtResp); err != nil {
-				fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+				fmt.Fprintln(os.Stderr, "[jdtls-wrapper <] Error: ", err.Error())
 			}
 
 			id, ok := getID(jdtResp.ID)
@@ -163,9 +177,12 @@ func run() error {
 
 			uri, err := url.Parse(definitionResult[0].URI)
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "[jdtls-wrapper]: invalid uri", definitionResult[0].URI)
+				fmt.Fprintln(os.Stderr, "[jdtls-wrapper <]: invalid uri", definitionResult[0].URI)
 			}
-			fmt.Fprintf(os.Stderr, "path: %s\n", uri.Path)
+
+			if *debugEnabled {
+				fmt.Fprintf(os.Stderr, "< path: %s\n", uri.Path)
+			}
 
 			if uri.Scheme == "jdt" {
 				newID := id + 1
@@ -179,14 +196,16 @@ func run() error {
 				}
 				data, err := json.Marshal(classReq)
 				if err != nil {
-					fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+					fmt.Fprintln(os.Stderr, "[jdtls-wrapper] Error: ", err.Error())
 				}
 
 				pending[newID] = func(resp *jdtResponse) {
-					fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", string(resp.Result))
+					if *debugEnabled {
+						fmt.Fprintln(os.Stderr, "[jdtls-wrapper] Debug: ", string(resp.Result))
+					}
 					result, err := strconv.Unquote(string(resp.Result))
 					if err != nil {
-						fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+						fmt.Fprintln(os.Stderr, "[jdtls-wrapper] Error: ", err.Error())
 					}
 
 					result = strings.ReplaceAll(result, `\n`, "\n")
@@ -195,10 +214,10 @@ func run() error {
 					targetURI := "file://" + tmpFileName
 					m[targetURI] = uri.String()
 					if err := os.MkdirAll(filepath.Dir(tmpFileName), 0755); err != nil {
-						fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+						fmt.Fprintln(os.Stderr, "[jdtls-wrapper] ErrorM: ", err.Error())
 					}
-					if err := os.WriteFile(tmpFileName, []byte(result), 0400); err != nil {
-						fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", err.Error())
+					if err := os.WriteFile(tmpFileName, []byte(result), 0644); err != nil {
+						fmt.Fprintln(os.Stderr, "[jdtls-wrapper] ErrorW: ", err.Error())
 					}
 					targetRange := Range{
 						Start: Position{
@@ -235,12 +254,14 @@ func run() error {
 		}
 	}()
 
-	scanner := bufio.NewScanner(serverStderr)
-	go func() {
-		for scanner.Scan() {
-			fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", scanner.Text())
-		}
-	}()
+	if *debugEnabled {
+		scanner := bufio.NewScanner(serverStderr)
+		go func() {
+			for scanner.Scan() {
+				fmt.Fprintln(os.Stderr, "[jdtls-wrapper]", scanner.Text())
+			}
+		}()
+	}
 
 	cmd.Wait()
 
